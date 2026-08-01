@@ -17,7 +17,7 @@ private enum CheckError: Error, CustomStringConvertible {
 }
 
 private final class ResultBox {
-    var value: GitSyncResult?
+    var value: SyncResult?
 }
 
 @main
@@ -796,7 +796,7 @@ private enum SyncManagerIntegrationCheck {
                    "peer issue files were not deterministic: \(report.issues.map(\.file))")
     }
 
-    private static func synchronize(repo: URL, deviceID: String, shell: String) throws -> GitSyncResult {
+    private static func synchronize(repo: URL, deviceID: String, shell: String) throws -> SyncResult {
         let box = ResultBox()
         manager(repo: repo, deviceID: deviceID).synchronize(snapshotCommand: SyncCommand(
             executable: "/bin/sh",
@@ -1017,7 +1017,7 @@ private enum SyncManagerIntegrationCheck {
         return result
     }
 
-    private static func waitForResult(_ box: ResultBox, timeout: TimeInterval) throws -> GitSyncResult {
+    private static func waitForResult(_ box: ResultBox, timeout: TimeInterval) throws -> SyncResult {
         let deadline = Date().addingTimeInterval(timeout)
         while box.value == nil && Date() < deadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))

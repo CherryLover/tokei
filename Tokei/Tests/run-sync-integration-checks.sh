@@ -12,6 +12,8 @@ swiftc -parse-as-library \
   -j 1 \
   -module-cache-path "$MODULE_CACHE" \
   Sources/Tokei/Model.swift \
+  Sources/Tokei/SyncBackend.swift \
+  Sources/Tokei/GitSyncBackend.swift \
   Sources/Tokei/SyncManager.swift \
   Tests/SyncManagerIntegrationCheck.swift \
   -o "$OUTPUT"

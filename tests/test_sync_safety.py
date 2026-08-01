@@ -19,11 +19,16 @@ class SyncSnapshotSafetyTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         main = (root / "Tokei/Sources/Tokei/main.swift").read_text()
         sync = (root / "Tokei/Sources/Tokei/SyncManager.swift").read_text()
+        git_backend = (root / "Tokei/Sources/Tokei/GitSyncBackend.swift").read_text()
 
         self.assertIn("autoSyncStartupWorkItem", main)
         self.assertIn("DispatchQueue.main.asyncAfter(deadline: .now() + 5", main)
         self.assertIn('@Published var syncStatus = ""', main)
-        self.assertIn("completion: @escaping (GitSyncResult) -> Void", sync)
+        # 同步入口仍挂在 SyncManager 上，并且仍然通过回调把结果报给界面
+        self.assertIn("completion: @escaping (SyncResult) -> Void", sync)
+        # git 事务已挪到后端；无论在哪一侧，都不允许出现裸推
+        self.assertIn("completion: @escaping (SyncResult) -> Void", git_backend)
+        self.assertNotIn("git push origin HEAD:main 2>/dev/null", git_backend)
         self.assertNotIn("git push origin HEAD:main 2>/dev/null", sync)
 
     def test_replaces_destination_symlink_without_touching_its_target(self):
