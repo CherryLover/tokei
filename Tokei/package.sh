@@ -55,8 +55,9 @@ codesign --verify --deep --strict "$APP"
 xattr -cr "$APP" 2>/dev/null || true
 echo "Built: $(pwd)/$APP"
 
-# 打包 DMG（含自定义背景 + 图标布局）
-if command -v hdiutil &>/dev/null; then
+# 打包 DMG（含自定义背景 + 图标布局）。CI 等无界面环境设 SKIP_DMG=1 跳过
+# （Finder AppleScript 排版步骤需要图形会话）。
+if [ -z "$SKIP_DMG" ] && command -v hdiutil &>/dev/null; then
     DMG="Tokei.dmg"
     rm -f "$DMG"
 
