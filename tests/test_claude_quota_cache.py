@@ -142,6 +142,34 @@ class ClaudeQuotaCacheTests(unittest.TestCase):
             state = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(state["candidate"]["path"], str(valid.resolve()))
 
+    def test_future_timestamp_files_do_not_block_incremental_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            cache_dir.mkdir()
+            state_file = Path(tmp) / "state.json"
+            self._write_entry(cache_dir, "valid", "old", self.now - 500)
+            decoy = cache_dir / "decoy_0"
+            decoy.write_bytes(b"ordinary chromium cache")
+            future = self.now + 11 * 365 * 86400
+            os.utime(decoy, ns=(future * 1_000_000_000, future * 1_000_000_000))
+
+            payloads = {
+                "old": self._payload(37.0, 62.0),
+                "new": self._payload(41.0, 65.0),
+            }
+            first = self._scan(cache_dir, state_file, self._decoder(payloads))
+            self.assertEqual(first["q5"], 37.0)
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertLessEqual(state["scan_mtime_ns"], (self.now + 300) * 1_000_000_000)
+            decoy_signature = f"{decoy.resolve()}|{future * 1_000_000_000}|{decoy.stat().st_size}"
+            self.assertIn(decoy_signature, state["scan_boundary"])
+
+            newest = self._write_entry(cache_dir, "newest", "new", self.now + 20)
+            replaced = self._scan(cache_dir, state_file, self._decoder(payloads), now=self.now + 20)
+            self.assertEqual(replaced["q5"], 41.0)
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertEqual(state["candidate"]["path"], str(newest.resolve()))
+
     def test_freshness_checks_source_age_and_each_reset(self):
         snapshot = {
             "q5": 10.0,

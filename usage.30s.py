@@ -4925,7 +4925,7 @@ def _zstd_decompress(data):
 
 
 # 首次全量定位 /usage，之后只检查变化项并复用最近一次有效候选。
-_CLAUDE_QUOTA_STATE_VERSION = 2
+_CLAUDE_QUOTA_STATE_VERSION = 3
 _CLAUDE_QUOTA_STALE_TTL = 1800
 _CLAUDE_QUOTA_FULL_SCAN_INTERVAL = 6 * 3600
 _CLAUDE_QUOTA_RETRY_SCAN_INTERVAL = 5 * 60
@@ -5050,9 +5050,8 @@ def _scan_claude_plan_raw(now=None):
 
     changed = [
         record for record in records
-        if record["mtime_ns"] > last_scan_ns or
-        (record["mtime_ns"] == last_scan_ns and
-         _claude_record_signature(record) not in scan_boundary)
+        if record["mtime_ns"] >= last_scan_ns and
+        _claude_record_signature(record) not in scan_boundary
     ]
     inspected = set()
     selected = None
@@ -5110,16 +5109,17 @@ def _scan_claude_plan_raw(now=None):
     elif candidate_invalid:
         state.pop("candidate", None)
 
-    if records:
-        newest_mtime = records[0]["mtime_ns"]
-        state["scan_mtime_ns"] = newest_mtime
-        state["scan_boundary"] = [
-            _claude_record_signature(record)
-            for record in records if record["mtime_ns"] == newest_mtime
-        ]
-    else:
-        state["scan_mtime_ns"] = -1
-        state["scan_boundary"] = []
+    # 水位线只认不超过当前时间的 mtime:系统时钟异常会留下未来时间戳的缓存文件,
+    # 一旦记成水位线,所有真实新文件都会被当成「旧的」而永远跳过增量检查。
+    # 未来时间戳的文件连同水位线上的文件一起记入 boundary,避免每轮重复读取。
+    cutoff_ns = (now + 300) * 1_000_000_000
+    watermark = next(
+        (record["mtime_ns"] for record in records if record["mtime_ns"] <= cutoff_ns), -1)
+    state["scan_mtime_ns"] = watermark
+    state["scan_boundary"] = [
+        _claude_record_signature(record)
+        for record in records if record["mtime_ns"] >= watermark
+    ]
     state["version"] = _CLAUDE_QUOTA_STATE_VERSION
     if state != original:
         _save_claude_quota_state(state)

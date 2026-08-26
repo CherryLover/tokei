@@ -78,7 +78,7 @@ final class DataLoader {
     }
 
     private struct ClaudeQuotaState: Codable, Equatable {
-        var version = 2
+        var version = 3
         var candidate: ClaudeQuotaCandidate?
         var snapshot: ClaudeQuotaSnapshot?
         var scanModified: TimeInterval = -1
@@ -131,7 +131,7 @@ final class DataLoader {
     private static func loadClaudeQuotaState() -> ClaudeQuotaState {
         guard let data = try? Data(contentsOf: claudeQuotaStateURL),
               let state = try? JSONDecoder().decode(ClaudeQuotaState.self, from: data),
-              state.version == 2 else { return ClaudeQuotaState() }
+              state.version == 3 else { return ClaudeQuotaState() }
         return state
     }
 
@@ -221,8 +221,7 @@ final class DataLoader {
         let initialScan = state.scanModified < 0
         let boundary = Set(state.scanBoundary)
         let changed = records.filter {
-            $0.modified > state.scanModified ||
-                ($0.modified == state.scanModified && !boundary.contains($0.signature))
+            $0.modified >= state.scanModified && !boundary.contains($0.signature)
         }
         var inspected = Set<String>()
         var selected: (ClaudeCacheRecord, ClaudeQuotaSnapshot)?
@@ -305,13 +304,13 @@ final class DataLoader {
             state.candidate = nil
         }
 
-        if let newest = records.first {
-            state.scanModified = newest.modified
-            state.scanBoundary = records.prefix { $0.modified == newest.modified }.map(\.signature)
-        } else {
-            state.scanModified = 0
-            state.scanBoundary = []
-        }
+        // 水位线只认不超过当前时间的 mtime:未来时间戳(系统时钟异常残留)一旦记成
+        // 水位线,所有真实新文件都会被当成「旧的」而永远跳过增量检查。
+        // 未来时间戳的文件连同水位线上的文件一起记入 boundary,避免每轮重复读取。
+        let cutoff = TimeInterval(nowEpoch + 300)
+        let watermark = records.first { $0.modified <= cutoff }?.modified ?? 0
+        state.scanModified = watermark
+        state.scanBoundary = records.prefix { $0.modified >= watermark }.map(\.signature)
         if state != original { saveClaudeQuotaState(state) }
         guard let snapshot = state.snapshot else { return nil }
         return claudeQuotaDictionary(snapshot, now: nowEpoch)
