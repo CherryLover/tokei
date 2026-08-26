@@ -6,6 +6,16 @@ struct SyncConfig: Codable {
     var sync_dir: String
     var auto_sync: Bool?
     var sync_interval: Int?     // minutes
+    var sync_backend: String? = nil
+    var webdav: WebDAVSettings? = nil
+}
+
+struct WebDAVSettings: Codable, Equatable {
+    var url: String
+    var path: String
+    var username: String
+    var compress: Bool = true
+    var remove_project_names: Bool = false
 }
 
 struct SyncCommand {
@@ -62,6 +72,7 @@ struct PeerLoadReport {
 
 final class SyncManager {
     static let supportedSyncIntervals = [30, 60, 120]
+    static let webDAVSyncIntervals = [5, 15, 30, 60, 120]
     static let defaultSyncInterval = 30
     static let configPath = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".tokei/config.json")
@@ -74,11 +85,17 @@ final class SyncManager {
 
     init() { config = Self.loadConfig() }
 
-    static func normalizedSyncInterval(_ value: Int?) -> Int {
-        guard let value, supportedSyncIntervals.contains(value) else {
+    static func normalizedSyncInterval(_ value: Int?, backend: String = "git") -> Int {
+        let supported = backend == "webdav" ? webDAVSyncIntervals : supportedSyncIntervals
+        guard let value, supported.contains(value) else {
             return defaultSyncInterval
         }
         return value
+    }
+
+    static func normalizedSyncInterval(for config: SyncConfig) -> Int {
+        normalizedSyncInterval(config.sync_interval,
+                               backend: config.sync_backend == "webdav" ? "webdav" : "git")
     }
 
     static func resolvedSyncDir(_ cfg: SyncConfig) -> String {
@@ -185,6 +202,19 @@ final class SyncManager {
                 dictionary["sync_interval"] = value
             } else {
                 dictionary.removeValue(forKey: "sync_interval")
+            }
+            let backend = normalized.sync_backend == "webdav" ? "webdav" : "git"
+            dictionary["sync_backend"] = backend
+            if backend == "webdav", let webdav = normalized.webdav {
+                dictionary["webdav"] = [
+                    "url": webdav.url.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "path": webdav.path.trimmingCharacters(in: CharacterSet(charactersIn: "/ ")),
+                    "username": webdav.username.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "compress": webdav.compress,
+                    "remove_project_names": webdav.remove_project_names
+                ]
+            } else {
+                dictionary.removeValue(forKey: "webdav")
             }
             try Self.writeConfigDictionary(dictionary)
             return normalized
@@ -637,7 +667,7 @@ final class SyncManager {
     /// 目前只有 Git 一种。接入别的传输方式时只需在这里按 `sync_backend`
     /// 字段分发，调用方（`Store.doSync`）和展示层都不用改。
     static func makeBackend(for cfg: SyncConfig) -> SyncBackend {
-        GitSyncBackend()
+        cfg.sync_backend == "webdav" ? WebDAVSyncBackend() : GitSyncBackend()
     }
 
     func synchronize(snapshotCommand: SyncCommand,

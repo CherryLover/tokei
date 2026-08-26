@@ -158,10 +158,14 @@ class ClaudeQuotaCacheTests(unittest.TestCase):
         self.assertFalse(fresh["qf_stale"])
 
         snapshot["q_updated"] = self.now - USAGE._CLAUDE_QUOTA_STALE_TTL - 1
-        expired = USAGE._claude_quota_with_freshness(snapshot, now=self.now)
-        self.assertTrue(expired["q5_stale"])
-        self.assertTrue(expired["q7_stale"])
-        self.assertTrue(expired["qf_stale"])
+        old_source = USAGE._claude_quota_with_freshness(snapshot, now=self.now)
+        self.assertFalse(old_source["q5_stale"])
+        self.assertTrue(old_source["q7_stale"])
+        self.assertFalse(old_source["qf_stale"])
+
+        snapshot["qf_reset"] = None
+        no_reset = USAGE._claude_quota_with_freshness(snapshot, now=self.now)
+        self.assertTrue(no_reset["qf_stale"])
 
 
 if __name__ == "__main__":

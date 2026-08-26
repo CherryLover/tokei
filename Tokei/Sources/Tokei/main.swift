@@ -141,7 +141,9 @@ final class Store: ObservableObject {
             return
         }
         syncing = true
-        syncStatus = "正在同步"
+        let isFirstWebDAVSync = cfg.sync_backend == "webdav"
+            && !FileManager.default.fileExists(atPath: WebDAVSyncBackend.stateURL.path)
+        syncStatus = isFirstWebDAVSync ? "正在首次同步" : "正在同步"
         syncSucceeded = nil
         syncDetail = ""
         let deviceID = SyncManager.normalizedDeviceID(cfg.device_id)
@@ -164,6 +166,14 @@ final class Store: ObservableObject {
             } else {
                 self.syncSucceeded = false
                 self.syncFailStreak += 1
+                if result.code == .quotaExceeded {
+                    self.stopAutoSync()
+                    UserDefaults.standard.set(false, forKey: "autoSync")
+                    if var config = self.syncManager.config {
+                        config.auto_sync = false
+                        _ = self.syncManager.saveConfig(config)
+                    }
+                }
                 self.syncStatus = self.syncFailStreak > 1
                     ? "同步失败（连续 \(self.syncFailStreak) 次）"
                     : "同步失败"
@@ -232,7 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         PanelView.syncQoderIdeConfigOnLaunch()
         PanelView.syncGrokLiveQuotaConfigOnLaunch()
         if var syncConfig = store.syncManager.config {
-            let interval = SyncManager.normalizedSyncInterval(syncConfig.sync_interval)
+            let interval = SyncManager.normalizedSyncInterval(for: syncConfig)
             if syncConfig.sync_interval != interval {
                 syncConfig.sync_interval = interval
                 store.syncManager.saveConfig(syncConfig)

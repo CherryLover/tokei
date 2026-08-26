@@ -66,9 +66,10 @@ Tokei 是一款 **macOS 菜单栏应用**，实时追踪你在 **12 款 AI 编�
 - 了解每个项目消耗了多少 Token 和成本
 
 ### 多设备同步
-- 基于 Git 的跨设备同步（Mac + Linux 服务器）
+- 支持 WebDAV 或 Git 的跨设备同步（Mac + Linux 服务器）
 - Mac 端设置里一键开启
-- 远程 Linux 服务器支持 crontab 自动采集和同步
+- WebDAV 支持坚果云、Nextcloud、群晖及自建服务，无需准备 Git 仓库
+- 远程 Linux 服务器支持 crontab 自动采集和上传
 - 也可以让 Claude Code 帮你自动完成全部配置
 
 ### 年度回顾（Wrapped）
@@ -105,7 +106,58 @@ open Tokei.app
 
 ## 多设备同步配置
 
-Tokei 支持通过私有 Git 仓库在多台机器间同步用量数据。
+Tokei 支持 WebDAV 和私有 Git 仓库两种方式。老配置仍默认使用 Git；新用户可以在设置中选择 WebDAV，填写服务器地址、远端目录、用户名和应用密码，然后先点「测试连接」。密码只保存在 macOS 系统钥匙串，不会写入配置文件。
+
+WebDAV 默认压缩上传，可减少约 90% 流量；还可以开启「上传时移除项目名」，只同步汇总数据。WebDAV 可选 5 / 15 / 30 / 60 / 120 分钟，Git 保持 30 / 60 / 120 分钟。
+
+已兼容常见标准 WebDAV 服务：
+
+- 坚果云：地址 `https://dav.jianguoyun.com/dav/`，密码使用坚果云生成的应用密码
+- Nextcloud：使用账号设置中显示的 WebDAV 地址
+- 群晖：使用 WebDAV Server 提供的 HTTPS 地址
+- 自建服务：支持 rclone、Caddy 等标准 WebDAV 实现
+
+### WebDAV 无界面节点
+
+服务器只上传自己的数据，不会下载其他设备的快照。准备 `~/.tokei/config.json`：
+
+```json
+{
+  "device_id": "server-01",
+  "sync_dir": "~/.tokei/sync",
+  "auto_sync": true,
+  "sync_interval": 5,
+  "sync_backend": "webdav",
+  "webdav": {
+    "url": "https://dav.jianguoyun.com/dav/",
+    "path": "tokei",
+    "username": "you@example.com",
+    "compress": true,
+    "remove_project_names": true
+  }
+}
+```
+
+密码优先通过环境变量提供：
+
+```bash
+mkdir -p ~/.tokei/sync
+export TOKEI_WEBDAV_PASSWORD='你的应用密码'
+python3 ~/.tokei/usage.30s.py --sync-push
+```
+
+也可以写入 `~/.tokei/webdav-secret`，但权限必须设为 `600`。定时任务示例：
+
+```bash
+umask 077
+printf '%s' '你的应用密码' > ~/.tokei/webdav-secret
+chmod 600 ~/.tokei/webdav-secret
+*/5 * * * * python3 ~/.tokei/usage.30s.py --sync-push >> ~/.tokei/sync.log 2>&1
+```
+
+### Git 同步
+
+Git 方式继续保留，配置方法不变。
 
 **Mac 端：** 打开设置 → 多设备同步 → 开启，选择一个 Git 仓库目录。
 
@@ -148,7 +200,7 @@ chmod +x ~/.tokei/tokei-sync.sh
 
 ## 数据来源
 
-所有数据均来自 **本地日志文件**，无网络请求。
+用量统计来自 **本地日志文件**。只有用户主动启用多设备同步、检查更新、更新价格或开启可选实时额度时才会联网。
 
 | 工具 | 日志路径 |
 |------|----------|

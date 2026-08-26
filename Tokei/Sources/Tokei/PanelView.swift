@@ -1429,6 +1429,15 @@ struct PanelView: View {
     @State private var configuredDeviceID: String?
     @AppStorage("autoSync") private var autoSync = false
     @AppStorage("syncInterval") private var syncInterval = SyncManager.defaultSyncInterval
+    @AppStorage("syncBackend") private var syncBackend = "git"
+    @State private var webDAVURL = ""
+    @State private var webDAVPath = "tokei"
+    @State private var webDAVUsername = ""
+    @State private var webDAVPassword = ""
+    @State private var webDAVPasswordStored = false
+    @State private var webDAVCompress = true
+    @State private var webDAVRemoveProjects = false
+    @State private var testingWebDAV = false
     @AppStorage("sitReminderOn") private var sitReminderOn = false
     @AppStorage("sitReminderInterval") private var sitReminderInterval = 90
     @AppStorage(MenuBarStyle.defaultsKey) private var menuBarStyle = MenuBarStyle.system.rawValue
@@ -1480,7 +1489,16 @@ struct PanelView: View {
                     }
                 }
                 if let auto = cfg.auto_sync { autoSync = auto }
-                syncInterval = SyncManager.normalizedSyncInterval(cfg.sync_interval)
+                syncBackend = cfg.sync_backend == "webdav" ? "webdav" : "git"
+                if let webdav = cfg.webdav {
+                    webDAVURL = webdav.url
+                    webDAVPath = webdav.path
+                    webDAVUsername = webdav.username
+                    webDAVPasswordStored = KeychainStore.read(account: webdav.username) != nil
+                    webDAVCompress = webdav.compress
+                    webDAVRemoveProjects = webdav.remove_project_names
+                }
+                syncInterval = SyncManager.normalizedSyncInterval(cfg.sync_interval, backend: syncBackend)
                 if store.syncEnabled && autoSync {
                     store.startAutoSync(minutes: syncInterval)
                 }
@@ -1797,6 +1815,22 @@ struct PanelView: View {
                 }
 
             if store.syncEnabled {
+                settingsStackedValue("同步方式") {
+                    Picker("同步方式", selection: $syncBackend) {
+                        Text("Git 仓库").tag("git")
+                        Text("WebDAV").tag("webdav")
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.mini)
+                    .onChange(of: syncBackend) { backend in
+                        syncInterval = SyncManager.normalizedSyncInterval(syncInterval, backend: backend)
+                        if backend == "webdav" && syncDir.isEmpty {
+                            syncDir = SyncManager.syncDir
+                        }
+                        saveSync()
+                    }
+                }
+
                 settingsValueRow("设备名") {
                     TextField("hostname", text: $deviceName)
                         .font(.system(size: 10, design: .monospaced))
@@ -1819,7 +1853,8 @@ struct PanelView: View {
                         }
                 }
 
-                settingsValueRow("目录") {
+                if syncBackend == "git" {
+                    settingsValueRow("目录") {
                     Text(syncDir.isEmpty ? "未设置" : (syncDir as NSString).lastPathComponent)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(syncDir.isEmpty ? Theme.tTertiary : Theme.tSecondary)
@@ -1829,13 +1864,46 @@ struct PanelView: View {
                         .buttonStyle(.plain)
                         .foregroundStyle(Theme.claude)
                         .disabled(store.syncing)
+                    }
+                } else {
+                    settingsValueRow("服务器地址") {
+                        TextField("https://dav.example.com/", text: $webDAVURL)
+                            .textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
+                            .font(.system(size: 9, design: .monospaced))
+                            .frame(width: 178)
+                    }
+                    settingsValueRow("远端目录") {
+                        TextField("tokei", text: $webDAVPath)
+                            .textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
+                            .font(.system(size: 10, design: .monospaced))
+                            .frame(width: 178)
+                    }
+                    settingsValueRow("用户名") {
+                        TextField("账号", text: $webDAVUsername)
+                            .textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
+                            .font(.system(size: 10, design: .monospaced))
+                            .frame(width: 178)
+                    }
+                    settingsValueRow("密码") {
+                        SecureField(webDAVPasswordStored ? "已保存在钥匙串" : "应用密码",
+                                    text: $webDAVPassword)
+                            .textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
+                            .font(.system(size: 10, design: .monospaced))
+                            .frame(width: 178)
+                    }
+                    settingsToggleRow("压缩后上传", isOn: $webDAVCompress)
+                    settingsToggleRow("上传时移除项目名", isOn: $webDAVRemoveProjects)
+                    settingsActionButton(icon: "network", title: testingWebDAV ? "测试中" : "测试连接") {
+                        testWebDAVConnection()
+                    }
+                    .disabled(testingWebDAV || store.syncing)
                 }
 
                 HStack(spacing: 8) {
                     settingsActionButton(icon: "arrow.triangle.2.circlepath", title: store.syncing ? "同步中" : "同步") {
                         if saveSync() { store.doSync() }
                     }
-                    .disabled(store.syncing || syncDir.isEmpty)
+                    .disabled(store.syncing || syncDir.isEmpty || (syncBackend == "webdav" && webDAVURL.isEmpty))
 
                     Spacer()
                     Text("自动").font(.system(size: 10)).foregroundStyle(Theme.tTertiary)
@@ -1849,7 +1917,7 @@ struct PanelView: View {
                         }
                     if autoSync {
                         Picker("", selection: $syncInterval) {
-                            ForEach(SyncManager.supportedSyncIntervals, id: \.self) { minutes in
+                            ForEach(syncBackend == "webdav" ? SyncManager.webDAVSyncIntervals : SyncManager.supportedSyncIntervals, id: \.self) { minutes in
                                 Text("\(minutes)m").tag(minutes)
                             }
                         }
@@ -2173,10 +2241,25 @@ struct PanelView: View {
             store.syncDetail = "设备名不能为空，且不能包含斜杠或控制字符"
             return false
         }
-        let interval = SyncManager.normalizedSyncInterval(syncInterval)
+        let interval = SyncManager.normalizedSyncInterval(syncInterval, backend: syncBackend)
         syncInterval = interval
+        let settings = syncBackend == "webdav" ? WebDAVSettings(
+            url: webDAVURL, path: webDAVPath, username: webDAVUsername,
+            compress: webDAVCompress, remove_project_names: webDAVRemoveProjects
+        ) : nil
         let cfg = SyncConfig(device_id: effectiveDeviceID, sync_dir: syncDir,
-                             auto_sync: autoSync, sync_interval: interval)
+                             auto_sync: autoSync, sync_interval: interval,
+                             sync_backend: syncBackend, webdav: settings)
+        if syncBackend == "webdav", !webDAVPassword.isEmpty,
+           !KeychainStore.save(account: webDAVUsername, password: webDAVPassword) {
+            store.syncSucceeded = false
+            store.syncStatus = "密码保存失败"
+            store.syncDetail = "无法写入系统钥匙串"
+            return false
+        }
+        if syncBackend == "webdav", !webDAVPassword.isEmpty {
+            webDAVPasswordStored = true
+        }
         if store.syncManager.saveConfig(cfg) {
             configuredDeviceID = effectiveDeviceID
             deviceName = effectiveDeviceID
@@ -2193,6 +2276,34 @@ struct PanelView: View {
             store.syncStatus = "同步配置保存失败"
             store.syncDetail = SyncManager.configPath.path
             return false
+        }
+    }
+
+    func testWebDAVConnection() {
+        guard saveSync(), let settings = store.syncManager.config?.webdav,
+              let password = KeychainStore.read(account: settings.username) else {
+            store.syncSucceeded = false
+            store.syncStatus = "WebDAV 配置不完整"
+            return
+        }
+        testingWebDAV = true
+        store.syncSucceeded = nil
+        store.syncStatus = "正在测试连接"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try WebDAVSyncBackend.probe(settings: settings, password: password) }
+            DispatchQueue.main.async {
+                testingWebDAV = false
+                switch result {
+                case .success(let message):
+                    store.syncSucceeded = true
+                    store.syncStatus = "连接成功"
+                    store.syncDetail = message
+                case .failure(let error):
+                    store.syncSucceeded = false
+                    store.syncStatus = "连接失败"
+                    store.syncDetail = error.localizedDescription
+                }
+            }
         }
     }
 

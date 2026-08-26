@@ -5015,19 +5015,23 @@ def _claude_quota_with_freshness(snapshot, now=None):
     except (TypeError, ValueError):
         updated = 0
     age = now - updated
-    source_stale = updated <= 0 or age > _CLAUDE_QUOTA_STALE_TTL or age < -300
+    invalid_source_time = updated <= 0 or age < -300
     for value_key, reset_key, stale_key in (
         ("q5", "q5_reset", "q5_stale"),
         ("q7", "q7_reset", "q7_stale"),
         ("qf", "qf_reset", "qf_stale"),
     ):
         reset = result.get(reset_key)
+        if result.get(value_key) is None:
+            result[stale_key] = False
+            continue
+        if invalid_source_time:
+            result[stale_key] = True
+            continue
         try:
-            reset_expired = reset is not None and int(reset) <= now
+            result[stale_key] = bool(int(reset) <= now) if reset is not None else age > _CLAUDE_QUOTA_STALE_TTL
         except (TypeError, ValueError):
-            reset_expired = False
-        result[stale_key] = bool(result.get(value_key) is not None and
-                                 (source_stale or reset_expired))
+            result[stale_key] = age > _CLAUDE_QUOTA_STALE_TTL
     return result
 
 
@@ -5499,6 +5503,124 @@ def _write_configured_sync_snapshot(d):
                     for p in ["all", "1d", "7d", "30d", "365d"]},
     }
     return _write_sync_snapshot(sync_dir, device_id, d)
+
+
+def _remove_sync_project_names(payload):
+    import copy
+    cleaned = copy.deepcopy(payload)
+    wrapped = cleaned.get("_dashboard", {}).get("wrapped", {})
+    if isinstance(wrapped, dict):
+        for period in wrapped.values():
+            if isinstance(period, dict):
+                period["projects"] = []
+    return cleaned
+
+
+def _webdav_password():
+    password = os.environ.get("TOKEI_WEBDAV_PASSWORD")
+    if password:
+        return password
+    secret = os.path.join(HOME, ".tokei", "webdav-secret")
+    try:
+        mode = os.stat(secret).st_mode & 0o777
+        if mode != 0o600:
+            raise RuntimeError("~/.tokei/webdav-secret 权限必须是 600")
+        with open(secret, encoding="utf-8") as f:
+            password = f.read().strip()
+    except FileNotFoundError:
+        raise RuntimeError("请设置 TOKEI_WEBDAV_PASSWORD 或 ~/.tokei/webdav-secret")
+    if not password:
+        raise RuntimeError("WebDAV 密码为空")
+    return password
+
+
+def _webdav_request(url, method, username, password, data=None):
+    import base64
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(url, data=data, method=method)
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    request.add_header("Authorization", "Basic " + token)
+    if data is not None:
+        request.add_header("Content-Type", "application/octet-stream")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        try:
+            if method == "MKCOL" and error.code == 405:
+                return error.code, b""
+            if error.code in (401, 403):
+                raise RuntimeError("WebDAV 用户名或密码错误")
+            if error.code == 507:
+                raise RuntimeError("WebDAV 存储空间或流量配额已用尽")
+            raise RuntimeError(f"WebDAV 返回 HTTP {error.code}")
+        finally:
+            error.close()
+            error.fp = None
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"WebDAV 网络请求失败：{error.reason}")
+
+
+def _webdav_target(cfg, filename=None):
+    from urllib.parse import quote, urlsplit
+    webdav = cfg.get("webdav") or {}
+    base = str(webdav.get("url") or "").strip()
+    parsed = urlsplit(base)
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1")):
+        raise RuntimeError("WebDAV 地址必须使用 https（仅 localhost 可以用 http）")
+    path = str(webdav.get("path") or "tokei").strip("/ ")
+    if ".." in path.split("/"):
+        raise RuntimeError("WebDAV 远端目录不能包含 ..")
+    parts = [quote(part, safe="") for part in path.split("/") if part]
+    url = base.rstrip("/") + "/"
+    if parts:
+        url += "/".join(parts) + "/"
+    if filename:
+        url += quote(filename, safe="")
+    return url
+
+
+def _webdav_ensure_directory(cfg, username, password):
+    from urllib.parse import quote
+    webdav = cfg.get("webdav") or {}
+    current = str(webdav.get("url") or "").strip().rstrip("/") + "/"
+    path = str(webdav.get("path") or "tokei").strip("/ ")
+    for segment in [part for part in path.split("/") if part]:
+        current += quote(segment, safe="") + "/"
+        _webdav_request(current, "MKCOL", username, password)
+
+
+def sync_push():
+    import gzip
+    cfg = _load_tokei_config()
+    if not cfg:
+        raise RuntimeError("同步配置不存在")
+    payload = compute()
+    meta = _load_json(PRICING_FILE, {}).get("_meta", {})
+    payload["_pricing"] = {"updated_at": meta.get("updated_at", ""), "count": meta.get("count", 0)}
+    if not _write_configured_sync_snapshot(payload):
+        raise RuntimeError("本机同步快照写入失败")
+    if cfg.get("sync_backend", "git") != "webdav":
+        return 0
+    webdav = cfg.get("webdav") or {}
+    username = str(webdav.get("username") or "").strip()
+    if not username:
+        raise RuntimeError("WebDAV 用户名为空")
+    password = _webdav_password()
+    if webdav.get("remove_project_names"):
+        payload = _remove_sync_project_names(payload)
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    compress = webdav.get("compress", True)
+    data = gzip.compress(raw, mtime=0) if compress else raw
+    device_file = _sync_snapshot_filename(cfg.get("device_id", ""))
+    if not device_file:
+        raise RuntimeError("设备名不合法")
+    filename = device_file + (".gz" if compress else "")
+    _webdav_ensure_directory(cfg, username, password)
+    _webdav_request(_webdav_target(cfg, filename), "PUT", username, password, data)
+    print("WebDAV 同步上传成功")
+    return 0
 
 
 def main_json():
@@ -6789,6 +6911,12 @@ if __name__ == "__main__":
         daily_costs()
     elif "--write-sync" in sys.argv:
         sys.exit(write_sync_snapshot())
+    elif "--sync-push" in sys.argv:
+        try:
+            sys.exit(sync_push())
+        except RuntimeError as error:
+            print(str(error), file=sys.stderr)
+            sys.exit(1)
     elif "--projects" in sys.argv:
         projects()
     elif "--wrapped" in sys.argv:

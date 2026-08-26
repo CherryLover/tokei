@@ -50,7 +50,9 @@ class GeminiUsageTests(unittest.TestCase):
                 "\n".join(json.dumps(item) for item in sub_records) + "\n", encoding="utf-8")
 
             old_dir = USAGE.GEMINI_DIR
+            old_dirs = USAGE.GEMINI_DIRS
             USAGE.GEMINI_DIR = tmp
+            USAGE.GEMINI_DIRS = []
             try:
                 cache = {"v": USAGE._SCAN_CACHE_VERSION}
                 result = USAGE.scan_gemini(USAGE.range_bounds(), cache)
@@ -61,6 +63,7 @@ class GeminiUsageTests(unittest.TestCase):
                     cached = USAGE.scan_gemini(USAGE.range_bounds(), cache)
             finally:
                 USAGE.GEMINI_DIR = old_dir
+                USAGE.GEMINI_DIRS = old_dirs
 
         usage = result["ranges"]["all"]
         self.assertEqual(usage["in"], 1150)

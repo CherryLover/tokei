@@ -69,7 +69,29 @@ private enum SyncManagerIntegrationCheck {
         try testSaveConfigRejectsDeviceIdentityChangeInIsolatedHome()
         try testInheritedGitDirectoryCannotRedirectSync()
         try testPeerLoaderReportsBadFilesIndependently()
-        print("SyncManager integration checks passed: 16")
+        try testWebDAVConfigCompatibilityAndIntervals()
+        print("SyncManager integration checks passed: 17")
+    }
+
+    private static func testWebDAVConfigCompatibilityAndIntervals() throws {
+        let legacy = Data("{\"device_id\":\"mac\",\"sync_dir\":\"/tmp/sync\"}".utf8)
+        let legacyConfig = try JSONDecoder().decode(SyncConfig.self, from: legacy)
+        try expect(legacyConfig.sync_backend == nil, "legacy config must continue to mean git")
+        try expect(SyncManager.makeBackend(for: legacyConfig).identifier == "git",
+                   "legacy config selected a non-git backend")
+        let webdav = SyncConfig(device_id: "mac", sync_dir: "/tmp/sync", auto_sync: true,
+                                sync_interval: 5, sync_backend: "webdav",
+                                webdav: WebDAVSettings(url: "https://example.com/dav/", path: "tokei",
+                                                       username: "user", compress: true,
+                                                       remove_project_names: true))
+        try expect(SyncManager.makeBackend(for: webdav).identifier == "webdav",
+                   "webdav config selected the wrong backend")
+        try expect(SyncManager.normalizedSyncInterval(5, backend: "webdav") == 5,
+                   "webdav must allow five-minute sync")
+        try expect(SyncManager.normalizedSyncInterval(for: webdav) == 5,
+                   "app launch must preserve a webdav five-minute interval")
+        try expect(SyncManager.normalizedSyncInterval(5, backend: "git") == 30,
+                   "git must retain its thirty-minute minimum")
     }
 
     private static func testForeignRebaseStopsBeforeSnapshotOrCommit() throws {

@@ -199,13 +199,15 @@ final class DataLoader {
         if let qf = snapshot.qf { result["qf"] = qf }
         if let reset = snapshot.qfReset { result["qf_reset"] = reset }
         let age = now - snapshot.updated
-        let sourceStale = age > claudeQuotaStaleTTL || age < -300
-        result["q5_stale"] = snapshot.q5 != nil &&
-            (sourceStale || (snapshot.q5Reset.map { $0 <= now } ?? false))
-        result["q7_stale"] = snapshot.q7 != nil &&
-            (sourceStale || (snapshot.q7Reset.map { $0 <= now } ?? false))
-        result["qf_stale"] = snapshot.qf != nil &&
-            (sourceStale || (snapshot.qfReset.map { $0 <= now } ?? false))
+        let invalidSourceTime = snapshot.updated <= 0 || age < -300
+        func isQuotaStale(reset: Int?) -> Bool {
+            if invalidSourceTime { return true }
+            if let reset { return reset <= now }
+            return age > claudeQuotaStaleTTL
+        }
+        result["q5_stale"] = snapshot.q5 != nil && isQuotaStale(reset: snapshot.q5Reset)
+        result["q7_stale"] = snapshot.q7 != nil && isQuotaStale(reset: snapshot.q7Reset)
+        result["qf_stale"] = snapshot.qf != nil && isQuotaStale(reset: snapshot.qfReset)
         return result
     }
 
@@ -410,7 +412,7 @@ final class DataLoader {
         let now = Int(Date().timeIntervalSince1970)
         let updated = intValue(claude["q_updated"]) ?? 0
         let age = now - updated
-        let sourceStale = updated <= 0 || age > claudeQuotaStaleTTL || age < -300
+        let invalidSourceTime = updated <= 0 || age < -300
         for (valueKey, resetKey, staleKey) in [
             ("q5", "q5_reset", "q5_stale"),
             ("q7", "q7_reset", "q7_stale"),
@@ -420,8 +422,13 @@ final class DataLoader {
                 claude.removeValue(forKey: staleKey)
                 continue
             }
-            let resetExpired = intValue(claude[resetKey]).map { $0 <= now } ?? false
-            claude[staleKey] = sourceStale || resetExpired
+            if invalidSourceTime {
+                claude[staleKey] = true
+            } else if let reset = intValue(claude[resetKey]) {
+                claude[staleKey] = reset <= now
+            } else {
+                claude[staleKey] = age > claudeQuotaStaleTTL
+            }
         }
     }
 

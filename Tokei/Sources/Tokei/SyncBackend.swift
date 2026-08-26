@@ -12,6 +12,10 @@ enum SyncCode: String {
     case invalidConfiguration
     case snapshotFailed
     case timedOut
+    case authFailed
+    case networkFailed
+    case quotaExceeded
+    case notFound
     case unknown
 
     // Git 专有
